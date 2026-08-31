@@ -23,7 +23,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import requests
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
@@ -32,23 +31,32 @@ from plotly.subplots import make_subplots
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
-GICS_TO_ETF = {
-    "Information Technology": "XLK",
-    "Health Care": "XLV",
-    "Financials": "XLF",
-    "Consumer Discretionary": "XLY",
-    "Communication Services": "XLC",
-    "Industrials": "XLI",
-    "Consumer Staples": "XLP",
-    "Energy": "XLE",
-    "Utilities": "XLU",
-    "Real Estate": "XLRE",
-    "Materials": "XLB",
-}
-SECTOR_ETFS = list(GICS_TO_ETF.values())
-BROAD = ["SPY", "QQQ", "VBR", "IWM"]
+from constituents import (CONSTITUENTS, SECTOR_NAMES, TICKER_TO_ETF, TICKER_TO_NAME)
 
-WIKI_SP500 = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+SECTOR_ETFS = list(SECTOR_NAMES.keys())
+BROAD = ["SPY", "QQQ", "VBR", "IWM"]
+Z_GRID = [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]
+
+# The download is daily either way; "weekly" just resamples afterwards. Daily
+# gives ~5x the observations and checks the stop far more precisely, at the
+# cost of noisier crossings.
+FREQ = {
+    "Daily":  {"rule": None,    "ann": 252, "bar": "day",
+               "z_default": 252, "z_max": 756, "z_step": 21,
+               "hold_default": 252, "hold_max": 504, "hold_step": 21},
+    "Weekly": {"rule": "W-FRI", "ann": 52,  "bar": "week",
+               "z_default": 52,  "z_max": 156, "z_step": 4,
+               "hold_default": 52,  "hold_max": 104, "hold_step": 4},
+}
+
+
+def label_for(t: str) -> str:
+    """XLY -> 'XLY · Consumer Discretionary';  NVDA -> 'NVDA · NVIDIA'."""
+    if t in SECTOR_NAMES:
+        return f"{t} · {SECTOR_NAMES[t]}"
+    if t in TICKER_TO_NAME:
+        return f"{t} · {TICKER_TO_NAME[t]}"
+    return t
 
 INK, PANE, GRID = "#12151A", "#171B21", "#232830"
 TEXT, MUTED, LINE = "#C8D0DA", "#6C7683", "#E8EDF3"
@@ -59,54 +67,9 @@ MONO = "ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace"
 # ─────────────────────────────────────────────────────────────────────────────
 # Constituents
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=86400, show_spinner=False)
-def sp500_members() -> pd.DataFrame:
-    """S&P 500 members with GICS sector. Columns: symbol, name, sector, etf."""
-    try:
-        # Wikipedia 403s the default urllib agent, which is what you hit on a
-        # shared cloud IP even though it works fine from a laptop.
-        html = requests.get(
-            WIKI_SP500, timeout=20,
-            headers={"User-Agent": "SectorPairs/1.0 (research dashboard)"},
-        ).text
-        tables = pd.read_html(html)
-        df = next(t for t in tables if "Symbol" in t.columns and "GICS Sector" in t.columns)
-        out = pd.DataFrame({
-            "symbol": df["Symbol"].astype(str).str.strip().str.replace(".", "-", regex=False),
-            "name": df["Security"].astype(str).str.strip(),
-            "sector": df["GICS Sector"].astype(str).str.strip(),
-        })
-        out["etf"] = out["sector"].map(GICS_TO_ETF)
-        return out.dropna(subset=["etf"]).drop_duplicates("symbol").reset_index(drop=True)
-    except Exception:
-        return pd.DataFrame(columns=["symbol", "name", "sector", "etf"])
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def etf_top_holdings(etf: str) -> pd.DataFrame:
-    """Fallback: yfinance exposes only the top ~10 holdings, not the full book."""
-    try:
-        th = yf.Ticker(etf).funds_data.top_holdings
-        if th is None or th.empty:
-            return pd.DataFrame(columns=["symbol", "name"])
-        return pd.DataFrame({
-            "symbol": [str(i).replace(".", "-") for i in th.index],
-            "name": th.iloc[:, 0].astype(str).values if th.shape[1] else th.index.astype(str),
-        })
-    except Exception:
-        return pd.DataFrame(columns=["symbol", "name"])
-
-
-def constituents_for(etf: str) -> tuple[pd.DataFrame, str]:
-    members = sp500_members()
-    if not members.empty:
-        sub = members[members["etf"] == etf][["symbol", "name"]].reset_index(drop=True)
-        if not sub.empty:
-            return sub, f"S&P 500 GICS membership ({len(sub)} names)"
-    top = etf_top_holdings(etf)
-    if not top.empty:
-        return top, "yfinance top holdings only (top 10 - incomplete)"
-    return pd.DataFrame(columns=["symbol", "name"]), "no constituent source available"
+def constituents_for(etf: str) -> pd.DataFrame:
+    rows = CONSTITUENTS.get(etf, [])
+    return pd.DataFrame(rows, columns=["symbol", "name"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,8 +82,12 @@ def _stooq(ticker: str) -> pd.Series:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def weekly_closes(tickers: tuple[str, ...], years: int = 12) -> pd.DataFrame:
-    """Weekly (Friday) adjusted closes. Yahoo first, Stooq for whatever it misses."""
+def load_closes(tickers: tuple[str, ...], years: int = 12,
+                freq: str = "Weekly") -> pd.DataFrame:
+    """Adjusted closes at the chosen frequency. Yahoo first, Stooq for the rest.
+
+    The network call is identical either way - always daily bars - so switching
+    to daily costs nothing on the download."""
     tickers = tuple(dict.fromkeys(tickers))
     close = pd.DataFrame()
     try:
@@ -152,9 +119,11 @@ def weekly_closes(tickers: tuple[str, ...], years: int = 12) -> pd.DataFrame:
     if close.empty:
         return close
     close.index = pd.to_datetime(close.index).tz_localize(None)
-    wk = close.sort_index().resample("W-FRI").last()
-    cutoff = wk.index.max() - pd.Timedelta(days=365 * years)
-    return wk[wk.index >= cutoff].dropna(axis=1, how="all")
+    close = close.sort_index()
+    rule = FREQ[freq]["rule"]
+    out = close.resample(rule).last() if rule else close
+    cutoff = out.index.max() - pd.Timedelta(days=365 * years)
+    return out[out.index >= cutoff].dropna(axis=1, how="all")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,7 +182,7 @@ class BTResult:
 def run_pair_backtest(stock: pd.Series, bench: pd.Series, z: pd.Series,
                       threshold: float, direction: int,
                       stop: float = 0.10, exit_z: float = 0.0,
-                      max_hold: int = 52) -> BTResult:
+                      max_hold: int = 52, ann: int = 52) -> BTResult:
     """Dollar-neutral pair, entered whenever z reaches `threshold`.
 
     direction +1 = long stock / short bench   (used when z is stretched low)
@@ -269,7 +238,7 @@ def run_pair_backtest(stock: pd.Series, bench: pd.Series, z: pd.Series,
 
         trades.append({
             "entry": idx[entry_i], "exit": idx[j],
-            "weeks": j - entry_i,
+            "bars": j - entry_i,
             "entry_z": round(float(zz.iloc[entry_i]), 2),
             "exit_z": round(float(zz.iloc[j]), 2),
             "return_%": round((np.exp(cum) - 1) * 100, 2),
@@ -290,17 +259,17 @@ def run_pair_backtest(stock: pd.Series, bench: pd.Series, z: pd.Series,
             "median_trade_%": round(tdf["return_%"].median(), 2),
             "best_%": round(tdf["return_%"].max(), 2),
             "worst_%": round(tdf["return_%"].min(), 2),
-            "avg_weeks": round(tdf["weeks"].mean(), 1),
+            "avg_bars": round(tdf["bars"].mean(), 1),
             "stops_hit": int((tdf["exit_reason"] == "stop").sum()),
             "total_return_%": round((equity.iloc[-1] - 1) * 100, 2),
         })
         inv = strat[active]
         if len(inv) > 2 and inv.std(ddof=1) > 0:
             stats["sharpe_in_trade"] = round(
-                float(inv.mean() / inv.std(ddof=1) * np.sqrt(52)), 2)
+                float(inv.mean() / inv.std(ddof=1) * np.sqrt(ann)), 2)
         if strat.std(ddof=1) > 0:
-            stats["sharpe_all_weeks"] = round(
-                float(strat.mean() / strat.std(ddof=1) * np.sqrt(52)), 2)
+            stats["sharpe_all_bars"] = round(
+                float(strat.mean() / strat.std(ddof=1) * np.sqrt(ann)), 2)
         stats["time_in_market_%"] = round(100 * active.mean(), 1)
         dd = equity / equity.cummax() - 1
         stats["max_drawdown_%"] = round(float(dd.min()) * 100, 2)
@@ -312,7 +281,7 @@ def run_pair_backtest(stock: pd.Series, bench: pd.Series, z: pd.Series,
 # Charts
 # ─────────────────────────────────────────────────────────────────────────────
 def indicator_figure(px: pd.Series, bench: pd.Series, label: str, bench_label: str,
-                     z_win: int, rsi_n: int) -> go.Figure:
+                     z_win: int, rsi_n: int, bar: str = "week") -> go.Figure:
     r = rsi(px, rsi_n)
     ml, sg, hist = macd(px)
     z = rel_z(px, bench, z_win)
@@ -321,10 +290,10 @@ def indicator_figure(px: pd.Series, bench: pd.Series, label: str, bench_label: s
     fig = make_subplots(
         rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
         row_heights=[0.36, 0.18, 0.20, 0.26],
-        subplot_titles=(f"{label} - weekly close",
-                        f"Weekly log return  ·  RSI({rsi_n}) overlaid right",
-                        "MACD 12/26/9 (weekly)",
-                        f"Rolling {z_win}w z-score vs {bench_label}"),
+        subplot_titles=(f"{label} - {bar}ly close",
+                        f"{bar.capitalize()}ly log return  ·  RSI({rsi_n}) overlaid right",
+                        f"MACD 12/26/9 ({bar}ly)",
+                        f"Rolling {z_win}-{bar} z-score vs {bench_label}"),
     )
     fig.add_trace(go.Scatter(x=px.index, y=px, mode="lines", line=dict(color=LINE, width=1.5),
                              name="Close"), row=1, col=1)
@@ -425,23 +394,60 @@ def history_figure(runs: list[dict]) -> go.Figure:
     return fig
 
 
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared UI pieces
 # ─────────────────────────────────────────────────────────────────────────────
-def z_state(z_now: float, trigger: float) -> tuple[int, str]:
-    """Direction implied by the current z, and a plain-language label."""
+def direction_for(z_now: float) -> tuple[int, str]:
+    """Mean reversion: negative z -> long the name, positive z -> short it."""
     if not np.isfinite(z_now):
         return 0, "no z available"
-    if z_now <= -abs(trigger):
-        return +1, f"z {z_now:+.2f} - stretched cheap, pair goes LONG stock / SHORT benchmark"
-    if z_now >= abs(trigger):
-        return -1, f"z {z_now:+.2f} - stretched rich, pair goes SHORT stock / LONG benchmark"
-    return 0, f"z {z_now:+.2f} - inside the bands, no signal at the current trigger"
+    if z_now < 0:
+        return +1, f"z {z_now:+.2f} — cheap vs benchmark → **LONG stock / SHORT benchmark**"
+    return -1, f"z {z_now:+.2f} — rich vs benchmark → **SHORT stock / LONG benchmark**"
+
+
+def benchmark_picker(key: str, default: str = "SPY") -> str:
+    """Sector ETFs and broad indexes by name, plus a free-text 'Other' box."""
+    opts = SECTOR_ETFS + BROAD + ["Other…"]
+    idx = opts.index(default) if default in opts else 0
+    pick = st.selectbox("Benchmark", opts, index=idx, key=f"{key}_bench",
+                        format_func=label_for)
+    if pick == "Other…":
+        typed = st.text_input("Benchmark ticker", value="", key=f"{key}_bench_other",
+                              placeholder="any ticker, e.g. SMH, GLD, MSFT").strip().upper()
+        return typed or ""
+    return pick
+
+
+def z_grid_table(stock: pd.Series, bench: pd.Series, z: pd.Series,
+                 stop: float, max_hold: int, ann: int, bar: str) -> pd.DataFrame:
+    """Run the study at each z level on the grid. Sign sets the direction."""
+    rows = []
+    for thr in Z_GRID:
+        d = +1 if thr < 0 else -1
+        res = run_pair_backtest(stock, bench, z, thr, d, stop=stop,
+                                max_hold=max_hold, ann=ann)
+        s = res.stats
+        rows.append({
+            "z entry": f"{thr:+.0f}",
+            "side": "long stock" if d > 0 else "short stock",
+            "trades": s.get("trades", 0),
+            "win %": s.get("win_rate_%"),
+            "avg trade %": s.get("avg_trade_%"),
+            "median %": s.get("median_%", s.get("median_trade_%")),
+            "total %": s.get("total_return_%"),
+            "max DD %": s.get("max_drawdown_%"),
+            "Sharpe": s.get("sharpe_in_trade"),
+            f"avg {bar}s": s.get("avg_bars"),
+            "stops": s.get("stops_hit"),
+        })
+    return pd.DataFrame(rows)
 
 
 def browse_panel(key: str, names: pd.DataFrame, bench_ticker: str,
-                 prices: pd.DataFrame, z_win: int, rsi_n: int) -> None:
-    """Prev/next through a list of tickers, charting each against a benchmark."""
+                 prices: pd.DataFrame, z_win: int, rsi_n: int, bar: str) -> None:
     have = [t for t in names["symbol"] if t in prices.columns]
     if not have:
         st.warning("No price history returned for these names.")
@@ -449,16 +455,13 @@ def browse_panel(key: str, names: pd.DataFrame, bench_ticker: str,
     st.session_state.setdefault(f"{key}_i", 0)
     st.session_state[f"{key}_i"] %= len(have)
 
-    label_of = dict(zip(names["symbol"], names.get("name", names["symbol"])))
     c1, c2, c3 = st.columns([1, 6, 1])
     if c1.button("←", key=f"{key}_prev", use_container_width=True):
         st.session_state[f"{key}_i"] -= 1
         st.rerun()
-    tick = c2.selectbox(
-        "Constituent", have, index=st.session_state[f"{key}_i"],
-        key=f"{key}_sel", label_visibility="collapsed",
-        format_func=lambda t: f"{t}  ·  {label_of.get(t, '')}",
-    )
+    tick = c2.selectbox("Constituent", have, index=st.session_state[f"{key}_i"],
+                        key=f"{key}_sel", label_visibility="collapsed",
+                        format_func=label_for)
     st.session_state[f"{key}_i"] = have.index(tick)
     if c3.button("→", key=f"{key}_next", use_container_width=True):
         st.session_state[f"{key}_i"] += 1
@@ -471,20 +474,19 @@ def browse_panel(key: str, names: pd.DataFrame, bench_ticker: str,
 
     m = st.columns(4)
     m[0].metric("Last", f"{px.iloc[-1]:,.2f}")
-    m[1].metric("1-week", f"{(px.iloc[-1] / px.iloc[-2] - 1) * 100:+.2f}%" if len(px) > 1 else "-")
+    m[1].metric(f"1-{bar}", f"{(px.iloc[-1] / px.iloc[-2] - 1) * 100:+.2f}%" if len(px) > 1 else "-")
     m[2].metric(f"RSI({rsi_n})", f"{r.iloc[-1]:.1f}" if len(r) else "-")
     m[3].metric(f"Z vs {bench_ticker}", f"{zn:+.2f}" if np.isfinite(zn) else "-")
-
-    st.caption(f"{len(have)} of {len(names)} names have usable history  ·  position {have.index(tick) + 1}/{len(have)}")
-    st.plotly_chart(
-        indicator_figure(px, bench, tick, bench_ticker, z_win, rsi_n),
-        use_container_width=True, key=f"{key}_fig",
-    )
+    st.caption(f"{len(have)} of {len(names)} names have usable history · "
+               f"position {have.index(tick) + 1}/{len(have)}")
+    st.plotly_chart(indicator_figure(px, bench, label_for(tick), label_for(bench_ticker),
+                                     z_win, rsi_n, bar),
+                    use_container_width=True, key=f"{key}_fig")
 
 
 def show_backtest(stock_t: str, bench_t: str, prices: pd.DataFrame,
-                  z_win: int, trigger: float, stop: float, max_hold: int,
-                  key: str) -> None:
+                  z_win: int, stop: float, max_hold: int, key: str,
+                  ann: int = 52, bar: str = "week") -> None:
     if stock_t not in prices.columns or bench_t not in prices.columns:
         st.error(f"Missing price history for {stock_t} or {bench_t}.")
         return
@@ -496,51 +498,64 @@ def show_backtest(stock_t: str, bench_t: str, prices: pd.DataFrame,
         return
 
     z_now = float(zc.iloc[-1])
-    direction, msg = z_state(z_now, trigger)
-    st.markdown(f"**{stock_t} vs {bench_t}** — {msg}")
+    direction, msg = direction_for(z_now)
+    st.markdown(f"**{label_for(stock_t)}** vs **{label_for(bench_t)}** — {msg}")
 
-    if direction == 0:
-        st.info(
-            f"z is {z_now:+.2f}, inside ±{trigger:.1f}. Nothing to test at the current "
-            "state. Lower the trigger to study shallower entries, or wait for a stretch."
-        )
-        return
-
-    thr = z_now
-    res = run_pair_backtest(px, bench, z, thr, direction, stop=stop, max_hold=max_hold)
+    res = run_pair_backtest(px, bench, z, z_now, direction, stop=stop,
+                            max_hold=max_hold, ann=ann)
     if res.trades.empty:
-        st.warning(f"No historical entries found at z {'≤' if direction > 0 else '≥'} {thr:+.2f}.")
-        return
+        st.warning(f"No historical entries at z {'≤' if direction > 0 else '≥'} {z_now:+.2f}. "
+                   "The grid below still covers the standard levels.")
+    else:
+        s = res.stats
+        a = st.columns(5)
+        a[0].metric("Trades", s["trades"])
+        a[1].metric("Win rate", f"{s['win_rate_%']}%")
+        a[2].metric("Avg trade", f"{s['avg_trade_%']:+.2f}%")
+        a[3].metric("Sharpe", s.get("sharpe_in_trade", "-"))
+        a[4].metric("Max DD", f"{s['max_drawdown_%']:.2f}%")
+        b = st.columns(5)
+        b[0].metric("Median", f"{s['median_%']:+.2f}%")
+        b[1].metric("Best / worst", f"{s['best_%']:+.1f} / {s['worst_%']:+.1f}%")
+        b[2].metric("Avg hold", f"{s['avg_bars']:.0f} {bar}s")
+        b[3].metric("Stops hit", f"{s['stops_hit']} / {s['trades']}")
+        b[4].metric("Total", f"{s['total_return_%']:+.1f}%")
 
-    s = res.stats
-    a = st.columns(5)
-    a[0].metric("Trades", s["trades"])
-    a[1].metric("Win rate", f"{s['win_rate_%']}%")
-    a[2].metric("Avg trade", f"{s['avg_trade_%']:+.2f}%")
-    a[3].metric("Sharpe (in-trade)", s.get("sharpe_in_trade", "-"))
-    a[4].metric("Max DD", f"{s['max_drawdown_%']:.2f}%")
-    b = st.columns(5)
-    b[0].metric("Median", f"{s['median_trade_%']:+.2f}%")
-    b[1].metric("Best / worst", f"{s['best_%']:+.1f} / {s['worst_%']:+.1f}%")
-    b[2].metric("Avg hold", f"{s['avg_weeks']:.0f}w")
-    b[3].metric("Stops hit", f"{s['stops_hit']} / {s['trades']}")
-    b[4].metric("Time in mkt", f"{s['time_in_market_%']}%")
+        label = f"{stock_t}/{bench_t} @ z{z_now:+.2f}"
+        st.plotly_chart(equity_figure(res, label), use_container_width=True, key=f"{key}_eq")
+        runs = st.session_state.setdefault("bt_runs", [])
+        if not any(r["label"] == label for r in runs):
+            runs.append({"label": label, "equity": res.equity, "stats": s})
+        st.dataframe(res.trades, use_container_width=True, hide_index=True, height=260)
 
-    label = f"{stock_t}/{bench_t} @ z{thr:+.2f}"
-    st.plotly_chart(equity_figure(res, label), use_container_width=True, key=f"{key}_eq")
-
-    runs = st.session_state.setdefault("bt_runs", [])
-    if not any(r["label"] == label for r in runs):
-        runs.append({"label": label, "equity": res.equity, "stats": s})
-    st.dataframe(res.trades, use_container_width=True, hide_index=True, height=280)
+    st.divider()
+    st.markdown("##### Same pair across the z grid")
+    st.caption("Each row is an independent study: enter every time z reached that level, "
+               "long the name below zero and short it above. Direction follows the sign.")
+    grid = z_grid_table(px, bench, z, stop, max_hold, ann, bar)
+    st.dataframe(
+        grid.style.background_gradient(cmap="RdYlGn", subset=["avg trade %"])
+                  .format(precision=2, na_rep="—"),
+        use_container_width=True, hide_index=True)
     st.caption(
-        f"Entries taken every time z crossed {'down through' if direction > 0 else 'up through'} "
-        f"{thr:+.2f} — today's level. Exit on reversion through 0, a {stop:.0%} adverse move "
-        f"in the spread, or {max_hold} weeks. The stop is evaluated on weekly closes, so a "
-        f"violent week overshoots it — treat {stop:.0%} as a floor, not a guarantee. No "
-        f"transaction costs, borrow or slippage. Entries are chosen with hindsight about "
-        f"which z level matters, so this is in-sample by construction."
+        f"Exit on reversion through 0, a {stop:.0%} adverse spread move, or {max_hold} {bar}s. "
+        f"The stop is evaluated on {bar}ly closes, so a violent {bar} overshoots it. No costs, "
+        "borrow or slippage. Rows with few trades are noise — treat anything under ~30 "
+        "trades as unmeasured, however good the win rate looks."
     )
+
+    runs = st.session_state.get("bt_runs", [])
+    if len(runs) > 1:
+        st.divider()
+        st.plotly_chart(history_figure(runs), use_container_width=True, key=f"{key}_hist")
+        st.dataframe(pd.DataFrame([
+            {"pair": r["label"], **{k: r["stats"].get(k) for k in
+             ("trades", "win_rate_%", "avg_trade_%", "total_return_%",
+              "max_drawdown_%", "sharpe_in_trade")}} for r in runs]),
+            use_container_width=True, hide_index=True)
+        if st.button("Clear run history", key=f"{key}_clear"):
+            st.session_state["bt_runs"] = []
+            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -550,86 +565,115 @@ st.set_page_config(page_title="Sector Pairs", layout="wide")
 st.markdown(f"""<style>
  .stApp {{ background:{INK}; }}
  html, body, [class*="css"] {{ font-family:{MONO}; }}
- [data-testid="stMetricValue"] {{ font-size:1.15rem; }}
+ [data-testid="stMetricValue"] {{ font-size:1.1rem; }}
+ button[data-baseweb="tab"] {{ font-size:0.78rem; }}
 </style>""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### Sector Pairs")
+    freq = st.radio("Bar frequency", list(FREQ), index=1, horizontal=True,
+                    help="The download is daily either way. Weekly resamples to "
+                         "Friday closes; daily keeps every bar.")
+    F = FREQ[freq]
+    bar, ann = F["bar"], F["ann"]
+
     years = st.slider("History (years)", 3, 20, 12)
-    z_win = st.slider("Z window (weeks)", 8, 156, 52, step=4)
-    rsi_n = st.slider("RSI length (weeks)", 5, 30, 14)
+    z_win = st.slider(f"Z window ({bar}s)", F["z_step"] * 2, F["z_max"],
+                      F["z_default"], step=F["z_step"])
+    rsi_n = st.slider(f"RSI length ({bar}s)", 5, 30, 14)
     st.divider()
     st.markdown("**Backtest rules**")
-    trigger = st.slider("Signal threshold |z|", 0.5, 3.0, 2.0, step=0.1)
     stop = st.slider("Adverse-spread stop", 0.02, 0.30, 0.10, step=0.01, format="%.2f")
-    max_hold = st.slider("Max hold (weeks)", 4, 104, 52, step=4)
+    max_hold = st.slider(f"Max hold ({bar}s)", F["hold_step"], F["hold_max"],
+                         F["hold_default"], step=F["hold_step"])
+    st.caption(f"{z_win} {bar}s ≈ {z_win / (252 if bar == 'day' else 52):.1f} years of lookback.")
     st.divider()
-    st.caption("Each sector tab loads only when you ask it to. Nothing is fetched up front.")
+    st.caption("Constituents are a static snapshot in constituents.py — no external "
+               "lookup, so nothing to fail. Edit that file to change the universe.")
 
-members = sp500_members()
-if members.empty:
-    st.warning("Couldn't reach the S&P 500 membership table. Falling back to yfinance "
-               "top-10 holdings, which is far less complete.")
+tabs = st.tabs([f"{e} {SECTOR_NAMES[e]}" for e in SECTOR_ETFS]
+               + ["◆ Backtest", "◆ Sectors vs market"])
 
-tab_names = [f"{e}" for e in SECTOR_ETFS] + ["◆ Backtest", "◆ Sector vs market"]
-tabs = st.tabs(tab_names)
-
-# --- one tab per sector -------------------------------------------------------
 for etf, tab in zip(SECTOR_ETFS, tabs[:len(SECTOR_ETFS)]):
     with tab:
-        sector_name = next(k for k, v in GICS_TO_ETF.items() if v == etf)
-        st.markdown(f"#### {sector_name} — constituents vs {etf}")
+        st.markdown(f"#### {SECTOR_NAMES[etf]} — constituents vs {etf}")
         flag = f"load_{etf}"
-        if not st.session_state.get(flag) and not st.button(f"Load {etf}", key=f"btn_{etf}"):
-            st.caption("Not loaded. Click to fetch this sector's constituents and prices.")
+        if not st.session_state.get(flag) and not st.button(f"Load {SECTOR_NAMES[etf]}",
+                                                            key=f"btn_{etf}"):
+            st.caption("Not loaded. Click to fetch prices for this sector.")
             continue
         st.session_state[flag] = True
-
-        names, source = constituents_for(etf)
+        names = constituents_for(etf)
         if names.empty:
-            st.error(f"No constituents resolved for {etf}.")
+            st.error(f"No constituents defined for {etf} in constituents.py.")
             continue
-        st.caption(f"Source: {source}")
-        prices = weekly_closes(tuple(names["symbol"]) + (etf,), years)
+        prices = load_closes(tuple(names["symbol"]) + (etf,), years, freq)
         if prices.empty or etf not in prices.columns:
             st.error(f"Price download failed for {etf}.")
             continue
-        browse_panel(f"sec_{etf}", names, etf, prices, z_win, rsi_n)
+        browse_panel(f"sec_{etf}", names, etf, prices, z_win, rsi_n, bar)
 
-# --- backtest -----------------------------------------------------------------
 with tabs[len(SECTOR_ETFS)]:
-    st.markdown("#### Pair backtest — entries at the current z-state")
+    st.markdown("#### Pair backtest — entry at the current z-state")
     c1, c2 = st.columns([2, 3])
-    tk = c1.text_input("Ticker", value="NVDA", key="bt_tk").strip().upper()
-    lookup = members.set_index("symbol")["etf"].to_dict() if not members.empty else {}
-    auto = lookup.get(tk, "SPY")
-    bench_t = c2.selectbox("Benchmark (auto-resolved, override if you like)",
-                           SECTOR_ETFS + BROAD,
-                           index=(SECTOR_ETFS + BROAD).index(auto) if auto in SECTOR_ETFS + BROAD else 0,
-                           key="bt_bench")
+    with c1:
+        tk = st.text_input("Ticker", value="NVDA", key="bt_tk").strip().upper()
+    with c2:
+        bench_t = benchmark_picker("bt", default=TICKER_TO_ETF.get(tk, "SPY"))
     if st.button("Run backtest", key="bt_run", type="primary"):
-        px = weekly_closes((tk, bench_t), years)
-        show_backtest(tk, bench_t, px, z_win, trigger, stop, max_hold, key="bt")
+        if not bench_t:
+            st.error("Enter a benchmark ticker.")
+        else:
+            show_backtest(tk, bench_t, load_closes((tk, bench_t), years, freq),
+                          z_win, stop, max_hold, key="bt", ann=ann, bar=bar)
 
-# --- sectors vs broad market --------------------------------------------------
 with tabs[len(SECTOR_ETFS) + 1]:
-    st.markdown("#### Sector ETFs vs a broad-market index")
-    idx = st.selectbox("Index", BROAD, key="bm_idx")
-    if st.session_state.get("bm_loaded") or st.button("Load sector ETFs", key="bm_btn"):
+    st.markdown("#### All eleven sectors vs a broad index")
+    c1, c2 = st.columns([2, 3])
+    idx = c1.selectbox("Index", BROAD + ["Other…"], key="bm_idx")
+    if idx == "Other…":
+        idx = c2.text_input("Index ticker", value="", key="bm_other",
+                            placeholder="any ticker").strip().upper()
+    if st.session_state.get("bm_loaded") or st.button("Run all sectors", key="bm_btn",
+                                                      type="primary"):
+        if not idx:
+            st.error("Enter an index ticker.")
+            st.stop()
         st.session_state["bm_loaded"] = True
-        prices = weekly_closes(tuple(SECTOR_ETFS) + (idx,), years)
+        prices = load_closes(tuple(SECTOR_ETFS) + (idx,), years, freq)
         if prices.empty or idx not in prices.columns:
             st.error("Price download failed.")
-        else:
-            names = pd.DataFrame({
-                "symbol": SECTOR_ETFS,
-                "name": [next(k for k, v in GICS_TO_ETF.items() if v == e) for e in SECTOR_ETFS],
-            })
-            browse_panel(f"bm_{idx}", names, idx, prices, z_win, rsi_n)
-            st.divider()
-            st.markdown("##### Backtest this sector against the index")
-            pick = st.selectbox("Sector ETF", SECTOR_ETFS, key="bm_bt_pick")
-            if st.button("Run backtest", key="bm_bt_run", type="primary"):
-                show_backtest(pick, idx, prices, z_win, trigger, stop, max_hold, key="bm_bt")
+            st.stop()
+
+        bench = prices[idx].dropna()
+        rows = []
+        for e in SECTOR_ETFS:
+            if e not in prices.columns:
+                continue
+            zz = rel_z(prices[e].dropna(), bench, z_win).dropna()
+            rr = rsi(prices[e].dropna(), rsi_n).dropna()
+            rows.append({"sector": SECTOR_NAMES[e], "etf": e,
+                         f"z vs {idx}": round(float(zz.iloc[-1]), 2) if len(zz) else np.nan,
+                         "RSI": round(float(rr.iloc[-1]), 1) if len(rr) else np.nan})
+        summary = pd.DataFrame(rows).sort_values(f"z vs {idx}", ascending=False)
+        st.dataframe(summary.style.background_gradient(cmap="RdYlBu_r",
+                     subset=[f"z vs {idx}"], vmin=-3, vmax=3).format(precision=2),
+                     use_container_width=True, hide_index=True)
+
+        st.divider()
+        for e in SECTOR_ETFS:
+            if e not in prices.columns:
+                continue
+            st.markdown(f"##### {SECTOR_NAMES[e]} ({e}) vs {idx}")
+            st.plotly_chart(
+                indicator_figure(prices[e].dropna(), bench, label_for(e), idx, z_win, rsi_n, bar),
+                use_container_width=True, key=f"bm_fig_{e}")
+
+        st.divider()
+        st.markdown("##### Backtest one of these pairs")
+        pick = st.selectbox("Sector", SECTOR_ETFS, key="bm_bt_pick", format_func=label_for)
+        if st.button("Run backtest", key="bm_bt_run", type="primary"):
+            show_backtest(pick, idx, prices, z_win, stop, max_hold, key="bm_bt",
+                          ann=ann, bar=bar)
     else:
-        st.caption("Not loaded. Click to fetch the eleven sector ETFs and the index.")
+        st.caption("Not loaded. Click to fetch all eleven sector ETFs and the index.")
