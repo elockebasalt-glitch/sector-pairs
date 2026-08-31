@@ -306,66 +306,60 @@ def indicator_figure(px: pd.Series, bench: pd.Series, label: str, bench_label: s
     r = rsi(px, rsi_n)
     ml, sg, hist = macd(px)
     z = rel_z(px, bench, z_win)
-    lr = log_returns(px)
-    px, r, ml, sg, hist, z, lr = (view_tail(x, view_years)
-                                  for x in (px, r, ml, sg, hist, z, lr))
+    px, r, ml, sg, hist, z = (view_tail(x, view_years)
+                              for x in (px, r, ml, sg, hist, z))
 
     fig = make_subplots(
-        rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.028,
-        row_heights=[0.28, 0.13, 0.17, 0.18, 0.24],
+        rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+        row_heights=[0.32, 0.19, 0.21, 0.28],
         subplot_titles=(f"{label} - {adjective(bar)} close"
                         + (f"   (last {view_years:g}y shown)" if view_years else "  (full history)"),
-                        f"{adjective(bar).capitalize()} log return",
                         f"RSI({rsi_n})   ·   overbought {rsi_hi} / oversold {rsi_lo}",
                         f"MACD 12/26/9 ({adjective(bar)})",
                         f"Rolling {z_win}-{bar} z-score vs {bench_label}"),
     )
     fig.add_trace(go.Scatter(x=px.index, y=px, mode="lines",
                              line=dict(color=LINE, width=1.5), name="Close"), row=1, col=1)
-    fig.add_trace(go.Bar(x=lr.index, y=lr * 100, name="log ret %",
-                         marker_color=np.where(lr >= 0, UP, DOWN),
-                         marker_line_width=0, opacity=0.55), row=2, col=1)
 
-    # RSI with a shaded neutral band and labelled extremes.
-    # The trace has to exist before add_hrect, which skips empty subplots.
+    # RSI. The trace has to exist before add_hrect, which skips empty subplots.
     fig.add_trace(go.Scatter(x=r.index, y=r, mode="lines",
-                             line=dict(color=CHEAP, width=1.3), name="RSI"), row=3, col=1)
+                             line=dict(color=CHEAP, width=1.3), name="RSI"), row=2, col=1)
     fig.add_hrect(y0=rsi_lo, y1=rsi_hi, fillcolor="rgba(122,136,153,0.09)",
-                  line_width=0, layer="below", row=3, col=1)
+                  line_width=0, layer="below", row=2, col=1)
     fig.add_hline(y=rsi_hi, line=dict(color=RICH, width=1, dash="dash"),
                   annotation_text=f"{rsi_hi} overbought", annotation_position="top left",
-                  annotation_font=dict(size=9, color=RICH), row=3, col=1)
+                  annotation_font=dict(size=9, color=RICH), row=2, col=1)
     fig.add_hline(y=rsi_lo, line=dict(color=CHEAP, width=1, dash="dash"),
                   annotation_text=f"{rsi_lo} oversold", annotation_position="bottom left",
-                  annotation_font=dict(size=9, color=CHEAP), row=3, col=1)
-    fig.add_hline(y=50, line=dict(color=GRID, width=1), row=3, col=1)
+                  annotation_font=dict(size=9, color=CHEAP), row=2, col=1)
+    fig.add_hline(y=50, line=dict(color=GRID, width=1), row=2, col=1)
 
     fig.add_trace(go.Bar(x=hist.index, y=hist, name="hist",
                          marker_color=np.where(hist >= 0, UP, DOWN),
-                         marker_line_width=0, opacity=0.5), row=4, col=1)
+                         marker_line_width=0, opacity=0.5), row=3, col=1)
     fig.add_trace(go.Scatter(x=ml.index, y=ml, mode="lines",
-                             line=dict(color=LINE, width=1.2), name="MACD"), row=4, col=1)
+                             line=dict(color=LINE, width=1.2), name="MACD"), row=3, col=1)
     fig.add_trace(go.Scatter(x=sg.index, y=sg, mode="lines",
-                             line=dict(color=RICH, width=1.1), name="signal"), row=4, col=1)
+                             line=dict(color=RICH, width=1.1), name="signal"), row=3, col=1)
 
     if not z.dropna().empty:
         fig.add_trace(go.Scatter(x=z.index, y=z, mode="lines",
                                  line=dict(color=TEXT, width=1.6), fill="tozeroy",
-                                 fillcolor="rgba(200,208,218,0.10)", name="z"), row=5, col=1)
+                                 fillcolor="rgba(200,208,218,0.10)", name="z"), row=4, col=1)
         for lvl, c in ((2, RICH), (-2, CHEAP)):
-            fig.add_hline(y=lvl, line=dict(color=c, width=1, dash="dash"), row=5, col=1)
-        fig.add_hline(y=0, line=dict(color=GRID, width=1), row=5, col=1)
+            fig.add_hline(y=lvl, line=dict(color=c, width=1, dash="dash"), row=4, col=1)
+        fig.add_hline(y=0, line=dict(color=GRID, width=1), row=4, col=1)
 
-    fig.update_layout(height=940, template="plotly_dark", paper_bgcolor=INK,
+    fig.update_layout(height=880, template="plotly_dark", paper_bgcolor=INK,
                       plot_bgcolor=INK, showlegend=False, bargap=0,
                       font=dict(family=MONO, size=11, color=TEXT),
                       margin=dict(l=8, r=8, t=44, b=8), hovermode="x unified")
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor=GRID, zeroline=False)
-    fig.update_yaxes(range=[0, 100], tickvals=[rsi_lo, 50, rsi_hi], row=3, col=1)
-    for a in fig.layout.annotations:
-        if a.text and "overbought" not in a.text and "oversold" not in a.text:
-            a.font.update(size=11, color=MUTED)
+    fig.update_yaxes(range=[0, 100], tickvals=[rsi_lo, 50, rsi_hi], row=2, col=1)
+    for a_ in fig.layout.annotations:
+        if a_.text and "overbought" not in a_.text and "oversold" not in a_.text:
+            a_.font.update(size=11, color=MUTED)
     return fig
 
 
@@ -373,43 +367,42 @@ def compact_figure(px: pd.Series, bench: pd.Series, z_win: int, rsi_n: int,
                    bar: str, bench_label: str,
                    rsi_lo: int = 30, rsi_hi: int = 70,
                    view_years: float | None = 3.0) -> go.Figure:
-    """One name, one short row: price, log return, RSI, MACD, z. Built for
-    scanning many names down a page rather than studying one."""
+    """One name, one short row: price, RSI, MACD, z. Built for scanning many
+    names down a page rather than studying one."""
     r = rsi(px, rsi_n)
     ml, sg, hist = macd(px)
     z = rel_z(px, bench, z_win)
-    lr = log_returns(px)
-    px, r, ml, sg, hist, z, lr = (view_tail(x, view_years)
-                                  for x in (px, r, ml, sg, hist, z, lr))
+    px, r, ml, sg, hist, z = (view_tail(x, view_years)
+                              for x in (px, r, ml, sg, hist, z))
 
-    fig = make_subplots(rows=1, cols=5, horizontal_spacing=0.032,
-                        subplot_titles=("price", "log ret",
-                                        f"RSI {rsi_n}  ({rsi_lo}/{rsi_hi})",
+    fig = make_subplots(rows=1, cols=4, horizontal_spacing=0.036,
+                        subplot_titles=("price", f"RSI {rsi_n}  ({rsi_lo}/{rsi_hi})",
                                         "MACD", f"z vs {bench_label}"))
     fig.add_trace(go.Scatter(x=px.index, y=px, mode="lines",
                              line=dict(color=LINE, width=1.2)), row=1, col=1)
-    fig.add_trace(go.Bar(x=lr.index, y=lr * 100, marker_line_width=0, opacity=.6,
-                         marker_color=np.where(lr >= 0, UP, DOWN)), row=1, col=2)
+
     fig.add_trace(go.Scatter(x=r.index, y=r, mode="lines",
-                             line=dict(color=CHEAP, width=1.1)), row=1, col=3)
+                             line=dict(color=CHEAP, width=1.1)), row=1, col=2)
     fig.add_hrect(y0=rsi_lo, y1=rsi_hi, fillcolor="rgba(122,136,153,0.09)",
-                  line_width=0, layer="below", row=1, col=3)
-    fig.add_hline(y=rsi_hi, line=dict(color=RICH, width=1, dash="dash"), row=1, col=3)
-    fig.add_hline(y=rsi_lo, line=dict(color=CHEAP, width=1, dash="dash"), row=1, col=3)
-    fig.add_hline(y=50, line=dict(color=GRID, width=1), row=1, col=3)
+                  line_width=0, layer="below", row=1, col=2)
+    fig.add_hline(y=rsi_hi, line=dict(color=RICH, width=1, dash="dash"), row=1, col=2)
+    fig.add_hline(y=rsi_lo, line=dict(color=CHEAP, width=1, dash="dash"), row=1, col=2)
+    fig.add_hline(y=50, line=dict(color=GRID, width=1), row=1, col=2)
+
     fig.add_trace(go.Bar(x=hist.index, y=hist, marker_line_width=0, opacity=.5,
-                         marker_color=np.where(hist >= 0, UP, DOWN)), row=1, col=4)
+                         marker_color=np.where(hist >= 0, UP, DOWN)), row=1, col=3)
     fig.add_trace(go.Scatter(x=ml.index, y=ml, mode="lines",
-                             line=dict(color=LINE, width=1)), row=1, col=4)
+                             line=dict(color=LINE, width=1)), row=1, col=3)
     fig.add_trace(go.Scatter(x=sg.index, y=sg, mode="lines",
-                             line=dict(color=RICH, width=.9)), row=1, col=4)
+                             line=dict(color=RICH, width=.9)), row=1, col=3)
+
     if not z.dropna().empty:
         fig.add_trace(go.Scatter(x=z.index, y=z, mode="lines",
                                  line=dict(color=TEXT, width=1.3), fill="tozeroy",
-                                 fillcolor="rgba(200,208,218,0.10)"), row=1, col=5)
+                                 fillcolor="rgba(200,208,218,0.10)"), row=1, col=4)
         for lvl, c in ((2, RICH), (-2, CHEAP)):
-            fig.add_hline(y=lvl, line=dict(color=c, width=1, dash="dash"), row=1, col=5)
-        fig.add_hline(y=0, line=dict(color=GRID, width=1), row=1, col=5)
+            fig.add_hline(y=lvl, line=dict(color=c, width=1, dash="dash"), row=1, col=4)
+        fig.add_hline(y=0, line=dict(color=GRID, width=1), row=1, col=4)
 
     fig.update_layout(height=185, template="plotly_dark", paper_bgcolor=INK,
                       plot_bgcolor=INK, showlegend=False, bargap=0,
@@ -417,9 +410,9 @@ def compact_figure(px: pd.Series, bench: pd.Series, z_win: int, rsi_n: int,
                       margin=dict(l=4, r=4, t=26, b=14))
     fig.update_xaxes(showgrid=False, showticklabels=False)
     fig.update_yaxes(showgrid=False, zeroline=False, tickfont=dict(size=8))
-    fig.update_yaxes(range=[0, 100], tickvals=[rsi_lo, 50, rsi_hi], row=1, col=3)
-    for a in fig.layout.annotations:
-        a.font.update(size=9, color=MUTED)
+    fig.update_yaxes(range=[0, 100], tickvals=[rsi_lo, 50, rsi_hi], row=1, col=2)
+    for a_ in fig.layout.annotations:
+        a_.font.update(size=9, color=MUTED)
     return fig
 
 
@@ -560,7 +553,8 @@ def z_grid_table(stock: pd.Series, bench: pd.Series, z: pd.Series,
 def scan_panel(key: str, names: pd.DataFrame, bench_ticker: str,
                prices: pd.DataFrame, z_win: int, rsi_n: int, bar: str,
                rsi_lo: int = 30, rsi_hi: int = 70,
-               view_years: float | None = 3.0) -> None:
+               view_years: float | None = 3.0,
+               max_charts: int | None = None) -> None:
     """Every constituent stacked down one scrollable pane, one compact row each."""
     have = [t for t in names["symbol"] if t in prices.columns]
     if not have:
@@ -585,16 +579,14 @@ def scan_panel(key: str, names: pd.DataFrame, bench_ticker: str,
     df = pd.DataFrame(rows)
     zcol = f"z vs {bench_ticker}"
 
-    c1, c2, c3 = st.columns([2, 2, 3])
+    n_show = len(have) if max_charts is None else min(max_charts, len(have))
+    c1, c2 = st.columns([2, 5])
     order = c1.selectbox("Sort by", ["|z| widest first", "z ascending (cheapest first)",
                                      "z descending (richest first)", "alphabetical"],
                          key=f"{key}_sort")
-    n_show = c2.slider("Charts to render", 5, max(len(have), 5),
-                       min(15, len(have)), key=f"{key}_n",
-                       help="Each chart costs render time. The table above always covers "
-                            "every name; this only limits how many charts are drawn.")
-    c3.caption(f"{len(have)} of {len(names)} names have usable history. "
-               f"Sorted view — scroll down through the charts.")
+    c2.caption(f"{len(have)} of {len(names)} names have usable history · "
+               f"drawing {n_show}. Change the count with **Charts per sector** in the "
+               f"sidebar. Scroll down through the charts.")
 
     if order.startswith("|z|"):
         df = df.reindex(df[zcol].abs().sort_values(ascending=False).index)
@@ -741,8 +733,58 @@ with st.sidebar:
                          F["hold_default"], step=F["hold_step"])
     st.caption(f"{z_win} {bar}s ≈ {z_win / (252 if bar == 'day' else 52):.1f} years of lookback.")
     st.divider()
+    st.markdown("**Rendering**")
+    cap_choice = st.select_slider(
+        "Charts per sector", options=[5, 10, 15, 25, 50, "All"], value="All",
+        help="Streamlit executes every tab on each rerun, not just the visible one. "
+             "With all sectors loaded and this on All you are drawing ~400 charts per "
+             "interaction. Dial it down if the app feels sluggish.")
+    max_charts = None if cap_choice == "All" else int(cap_choice)
+
+    st.divider()
+    loaded_now = sum(1 for e in SECTOR_ETFS if st.session_state.get(f"load_{e}"))
+    b1, b2 = st.columns([3, 2])
+    fetch_all = b1.button("⟳ Load / refresh all", use_container_width=True,
+                          help="Clears the price cache and re-pulls every sector plus the "
+                               "broad indexes, then opens all tabs. Takes a few minutes on "
+                               "first run.")
+    if b2.button("Unload", use_container_width=True,
+                 help="Closes every tab so reruns stay fast. Cached prices are kept."):
+        for e in SECTOR_ETFS:
+            st.session_state.pop(f"load_{e}", None)
+        st.session_state.pop("bm_loaded", None)
+        st.rerun()
+    st.caption(f"{loaded_now}/{len(SECTOR_ETFS)} sector tabs open"
+               + ("  ·  reruns will be slow" if loaded_now > 3 and max_charts is None else ""))
+
+    st.divider()
     st.caption("Constituents are a static snapshot in constituents.py — no external "
                "lookup, so nothing to fail. Edit that file to change the universe.")
+
+if fetch_all:
+    st.cache_data.clear()
+    jobs = [(e, tuple(t for t, _ in CONSTITUENTS[e]) + (e,)) for e in SECTOR_ETFS]
+    jobs.append(("broad indexes", tuple(SECTOR_ETFS) + tuple(BROAD)))
+    bar_ui = st.progress(0.0, text="Starting…")
+    failed = []
+    for i, (nm, ticks) in enumerate(jobs, 1):
+        bar_ui.progress(i / len(jobs),
+                        text=f"[{i}/{len(jobs)}] {SECTOR_NAMES.get(nm, nm)} — {len(ticks)} tickers")
+        try:
+            got = load_closes(ticks, years, freq)
+            if got.empty:
+                failed.append(nm)
+        except Exception:
+            failed.append(nm)
+        if nm in SECTOR_NAMES:
+            st.session_state[f"load_{nm}"] = True
+    st.session_state["bm_loaded"] = True
+    bar_ui.empty()
+    if failed:
+        st.warning("Download returned nothing for: " + ", ".join(failed))
+    else:
+        st.success("All sectors cached. Every tab is open — set **Charts per sector** "
+                   "lower in the sidebar if reruns feel slow.")
 
 tabs = st.tabs([f"{e} {SECTOR_NAMES[e]}" for e in SECTOR_ETFS]
                + ["◆ Backtest", "◆ Sectors vs market"])
@@ -753,7 +795,8 @@ for etf, tab in zip(SECTOR_ETFS, tabs[:len(SECTOR_ETFS)]):
         flag = f"load_{etf}"
         if not st.session_state.get(flag) and not st.button(f"Load {SECTOR_NAMES[etf]}",
                                                             key=f"btn_{etf}"):
-            st.caption("Not loaded. Click to fetch prices for this sector.")
+            st.caption("Not loaded. Click to fetch this sector, or use "
+                       "**⟳ Load / refresh all** in the sidebar to do every sector at once.")
             continue
         st.session_state[flag] = True
         names = constituents_for(etf)
@@ -765,7 +808,7 @@ for etf, tab in zip(SECTOR_ETFS, tabs[:len(SECTOR_ETFS)]):
             st.error(f"Price download failed for {etf}.")
             continue
         scan_panel(f"sec_{etf}", names, etf, prices, z_win, rsi_n, bar,
-                   rsi_lo, rsi_hi, view_years)
+                   rsi_lo, rsi_hi, view_years, max_charts)
 
 with tabs[len(SECTOR_ETFS)]:
     st.markdown("#### Pair backtest — entry at the current z-state")
