@@ -256,7 +256,7 @@ def run_pair_backtest(stock: pd.Series, bench: pd.Series, z: pd.Series,
         stats.update({
             "win_rate_%": round(100 * wins.mean(), 1),
             "avg_trade_%": round(tdf["return_%"].mean(), 2),
-            "median_trade_%": round(tdf["return_%"].median(), 2),
+            "median_%": round(tdf["return_%"].median(), 2),
             "best_%": round(tdf["return_%"].max(), 2),
             "worst_%": round(tdf["return_%"].min(), 2),
             "avg_bars": round(tdf["bars"].mean(), 1),
@@ -301,7 +301,11 @@ def view_tail(s: pd.Series, years: float | None) -> pd.Series:
 def indicator_figure(px: pd.Series, bench: pd.Series, label: str, bench_label: str,
                      z_win: int, rsi_n: int, bar: str = "week",
                      rsi_lo: int = 30, rsi_hi: int = 70,
-                     view_years: float | None = 3.0) -> go.Figure:
+                     view_years: float | None = 3.0,
+                     trades: pd.DataFrame | None = None,
+                     entry_z: float | None = None) -> go.Figure:
+    """Pass `trades` to mark backtest entries and exits on the z pane, so the
+    equity curve and the z path can be read against each other."""
     # computed on everything, then trimmed for the eye
     r = rsi(px, rsi_n)
     ml, sg, hist = macd(px)
@@ -350,8 +354,39 @@ def indicator_figure(px: pd.Series, bench: pd.Series, label: str, bench_label: s
             fig.add_hline(y=lvl, line=dict(color=c, width=1, dash="dash"), row=4, col=1)
         fig.add_hline(y=0, line=dict(color=GRID, width=1), row=4, col=1)
 
+        if entry_z is not None:
+            fig.add_hline(y=entry_z, line=dict(color=UP, width=1.2, dash="dot"),
+                          annotation_text=f"entry {entry_z:+.2f}",
+                          annotation_position="top right",
+                          annotation_font=dict(size=9, color=UP), row=4, col=1)
+
+        if trades is not None and not trades.empty:
+            zc = z.dropna()
+            ent = zc.reindex(pd.DatetimeIndex(trades["entry"])).dropna()
+            if len(ent):
+                fig.add_trace(go.Scatter(
+                    x=ent.index, y=ent.values, mode="markers", name="entry",
+                    marker=dict(color=TEXT, size=8, symbol="circle-open",
+                                line=dict(width=1.6)),
+                    hovertemplate="entry  z %{y:+.2f}<br>%{x|%Y-%m-%d}<extra></extra>"),
+                    row=4, col=1)
+            for reason, colour, sym in (("stop", DOWN, "x"), ("target", UP, "triangle-up"),
+                                        ("max hold", MUTED, "square")):
+                sub_t = trades[trades["exit_reason"] == reason]
+                if sub_t.empty:
+                    continue
+                pts = zc.reindex(pd.DatetimeIndex(sub_t["exit"])).dropna()
+                if not len(pts):
+                    continue
+                fig.add_trace(go.Scatter(
+                    x=pts.index, y=pts.values, mode="markers", name=reason,
+                    marker=dict(color=colour, size=8, symbol=sym),
+                    hovertemplate=reason + "  z %{y:+.2f}<br>%{x|%Y-%m-%d}<extra></extra>"),
+                    row=4, col=1)
+
     fig.update_layout(height=880, template="plotly_dark", paper_bgcolor=INK,
-                      plot_bgcolor=INK, showlegend=False, bargap=0,
+                      plot_bgcolor=INK, showlegend=trades is not None, bargap=0,
+                      legend=dict(orientation="h", y=1.06, x=0, bgcolor="rgba(0,0,0,0)"),
                       font=dict(family=MONO, size=11, color=TEXT),
                       margin=dict(l=8, r=8, t=44, b=8), hovermode="x unified")
     fig.update_xaxes(showgrid=False)
@@ -503,6 +538,18 @@ def shade_col(df: pd.DataFrame, col: str, lo: float, hi: float, **kw):
     return df.style.apply(lambda c: [shade(v, lo, hi, **kw) for v in c], subset=[col])
 
 
+def stat(s: dict, key: str, fmt: str = "{:+.2f}%", dash: str = "—") -> str:
+    """Read a stat safely. A missing or non-numeric value renders as a dash
+    rather than taking down the whole page."""
+    v = s.get(key)
+    if v is None:
+        return dash
+    try:
+        return fmt.format(v)
+    except (TypeError, ValueError):
+        return str(v)
+
+
 def direction_for(z_now: float) -> tuple[int, str]:
     """Mean reversion: negative z -> long the name, positive z -> short it."""
     if not np.isfinite(z_now):
@@ -540,7 +587,7 @@ def z_grid_table(stock: pd.Series, bench: pd.Series, z: pd.Series,
             "trades": s.get("trades", 0),
             "win %": s.get("win_rate_%"),
             "avg trade %": s.get("avg_trade_%"),
-            "median %": s.get("median_%", s.get("median_trade_%")),
+            "median %": s.get("median_%"),
             "total %": s.get("total_return_%"),
             "max DD %": s.get("max_drawdown_%"),
             "Sharpe": s.get("sharpe_in_trade"),
@@ -620,7 +667,8 @@ def scan_panel(key: str, names: pd.DataFrame, bench_ticker: str,
 
 def show_backtest(stock_t: str, bench_t: str, prices: pd.DataFrame,
                   z_win: int, stop: float, max_hold: int, key: str,
-                  ann: int = 52, bar: str = "week") -> None:
+                  ann: int = 52, bar: str = "week",
+                  rsi_n: int = 14, rsi_lo: int = 30, rsi_hi: int = 70) -> None:
     if stock_t not in prices.columns or bench_t not in prices.columns:
         st.error(f"Missing price history for {stock_t} or {bench_t}.")
         return
@@ -643,18 +691,34 @@ def show_backtest(stock_t: str, bench_t: str, prices: pd.DataFrame,
     else:
         s = res.stats
         a = st.columns(5)
-        a[0].metric("Trades", s["trades"])
-        a[1].metric("Win rate", f"{s['win_rate_%']}%")
-        a[2].metric("Avg trade", f"{s['avg_trade_%']:+.2f}%")
-        a[3].metric("Sharpe", s.get("sharpe_in_trade", "-"))
-        a[4].metric("Max DD", f"{s['max_drawdown_%']:.2f}%")
+        a[0].metric("Trades", stat(s, "trades", "{:.0f}"))
+        a[1].metric("Win rate", stat(s, "win_rate_%", "{:.1f}%"))
+        a[2].metric("Avg trade", stat(s, "avg_trade_%"))
+        a[3].metric("Sharpe", stat(s, "sharpe_in_trade", "{:.2f}"))
+        a[4].metric("Max DD", stat(s, "max_drawdown_%", "{:.2f}%"))
         b = st.columns(5)
-        b[0].metric("Median", f"{s['median_%']:+.2f}%")
-        b[1].metric("Best / worst", f"{s['best_%']:+.1f} / {s['worst_%']:+.1f}%")
-        b[2].metric("Avg hold", f"{s['avg_bars']:.0f} {bar}s")
-        b[3].metric("Stops hit", f"{s['stops_hit']} / {s['trades']}")
-        b[4].metric("Total", f"{s['total_return_%']:+.1f}%")
+        b[0].metric("Median", stat(s, "median_%"))
+        b[1].metric("Best / worst",
+                    f"{stat(s, 'best_%', '{:+.1f}')} / {stat(s, 'worst_%', '{:+.1f}')}%")
+        b[2].metric("Avg hold", stat(s, "avg_bars", "{:.0f} " + f"{bar}s"))
+        b[3].metric("Stops hit", f"{stat(s, 'stops_hit', '{:.0f}')} / {stat(s, 'trades', '{:.0f}')}")
+        b[4].metric("Total", stat(s, "total_return_%", "{:+.1f}%"))
 
+    st.plotly_chart(
+        indicator_figure(px, bench, label_for(stock_t), label_for(bench_t),
+                         z_win, rsi_n, bar, rsi_lo, rsi_hi,
+                         view_years=None,
+                         trades=None if res.trades.empty else res.trades,
+                         entry_z=z_now),
+        use_container_width=True, key=f"{key}_pair")
+    st.caption(
+        f"Same {z_win}-{bar} z-score as the sector tabs, on the full pull rather than the "
+        f"sidebar chart window, so every trade is visible. The dotted line is today's z "
+        f"({z_now:+.2f}) — the level entries are taken at. Hollow circles are entries; "
+        f"triangles took profit at z=0, crosses stopped out, squares hit the hold limit."
+    )
+
+    if not res.trades.empty:
         label = f"{stock_t}/{bench_t} @ z{z_now:+.2f}"
         st.plotly_chart(equity_figure(res, label), use_container_width=True, key=f"{key}_eq")
         runs = st.session_state.setdefault("bt_runs", [])
@@ -822,7 +886,8 @@ with tabs[len(SECTOR_ETFS)]:
             st.error("Enter a benchmark ticker.")
         else:
             show_backtest(tk, bench_t, load_closes((tk, bench_t), years, freq),
-                          z_win, stop, max_hold, key="bt", ann=ann, bar=bar)
+                          z_win, stop, max_hold, key="bt", ann=ann, bar=bar,
+                          rsi_n=rsi_n, rsi_lo=rsi_lo, rsi_hi=rsi_hi)
 
 with tabs[len(SECTOR_ETFS) + 1]:
     st.markdown("#### All eleven sectors vs a broad index")
@@ -871,6 +936,6 @@ with tabs[len(SECTOR_ETFS) + 1]:
         pick = st.selectbox("Sector", SECTOR_ETFS, key="bm_bt_pick", format_func=label_for)
         if st.button("Run backtest", key="bm_bt_run", type="primary"):
             show_backtest(pick, idx, prices, z_win, stop, max_hold, key="bm_bt",
-                          ann=ann, bar=bar)
+                          ann=ann, bar=bar, rsi_n=rsi_n, rsi_lo=rsi_lo, rsi_hi=rsi_hi)
     else:
         st.caption("Not loaded. Click to fetch all eleven sector ETFs and the index.")
