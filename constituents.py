@@ -1,8 +1,6 @@
 """Static S&P 500 membership by GICS sector, mapped to the Select Sector SPDRs.
 
-Snapshot taken mid-2026 and deliberately weighted toward the larger, liquid
-names in each sector rather than the full 500 - the small tail adds noise to a
-relative-value screen without adding much information.
+Snapshot of full S&P 500 membership by GICS sector, taken mid-2026.
 
 This is a snapshot, not a live feed. Index membership drifts: names get added,
 dropped, acquired, or reclassified between GICS sectors. Re-check before
@@ -35,10 +33,16 @@ CONSTITUENTS = {
  ("APH","Amphenol"),("NXPI","NXP Semiconductors"),("FTNT","Fortinet"),("MCHP","Microchip"),
  ("ON","ON Semiconductor"),("GLW","Corning"),("HPQ","HP Inc"),("DELL","Dell Technologies"),
  ("WDC","Western Digital"),("STX","Seagate"),("TER","Teradyne"),("SWKS","Skyworks"),
- ("KEYS","Keysight"),("CDW","CDW Corp"),("IT","Gartner"),("ANSS","Ansys"),
+ ("KEYS","Keysight"),("CDW","CDW Corp"),("IT","Gartner"),
  ("TYL","Tyler Technologies"),("ZBRA","Zebra Technologies"),("JBL","Jabil"),
  ("HPE","HP Enterprise"),("NTAP","NetApp"),("TDY","Teledyne"),("PTC","PTC Inc"),
  ("FSLR","First Solar"),
+ ("APP","AppLovin"),("PLTR","Palantir"),("CRWD","CrowdStrike"),("WDAY","Workday"),
+ ("ADSK","Autodesk"),("GDDY","GoDaddy"),("VRSN","VeriSign"),("AKAM","Akamai"),
+ ("FFIV","F5 Inc"),("EPAM","EPAM Systems"),("GEN","Gen Digital"),
+ ("SMCI","Super Micro Computer"),("TRMB","Trimble"),("CTSH","Cognizant"),
+ ("MPWR","Monolithic Power"),("ENPH","Enphase Energy"),("TEL","TE Connectivity"),
+ ("FICO","Fair Isaac"),("PAYC","Paycom"),("DAY","Dayforce"),
 ],
 "XLV": [
  ("LLY","Eli Lilly"),("UNH","UnitedHealth"),("JNJ","Johnson & Johnson"),("ABBV","AbbVie"),
@@ -54,6 +58,10 @@ CONSTITUENTS = {
  ("MTD","Mettler-Toledo"),("BAX","Baxter"),("HOLX","Hologic"),("VTRS","Viatris"),
  ("LH","Labcorp"),("DGX","Quest Diagnostics"),("STE","Steris"),("PODD","Insulet"),
  ("MOH","Molina Healthcare"),("CAH","Cardinal Health"),("CRL","Charles River Labs"),
+ ("HUM","Humana"),("WAT","Waters"),("COO","Cooper Companies"),("ILMN","Illumina"),
+ ("ALGN","Align Technology"),("DVA","DaVita"),("UHS","Universal Health Services"),
+ ("HSIC","Henry Schein"),("INCY","Incyte"),("TECH","Bio-Techne"),("RVTY","Revvity"),
+ ("SOLV","Solventum"),("XRAY","Dentsply Sirona"),("BIO","Bio-Rad Labs"),
 ],
 "XLF": [
  ("BRK-B","Berkshire Hathaway"),("JPM","JPMorgan Chase"),("V","Visa"),("MA","Mastercard"),
@@ -70,6 +78,14 @@ CONSTITUENTS = {
  ("RJF","Raymond James"),("FITB","Fifth Third Bancorp"),("MTB","M&T Bank"),
  ("CINF","Cincinnati Financial"),("HBAN","Huntington Bancshares"),("RF","Regions Financial"),
  ("CFG","Citizens Financial"),("KEY","KeyCorp"),
+ ("KKR","KKR & Co"),("APO","Apollo Global"),("ARES","Ares Management"),("MCO","Moody's"),
+ ("FIS","Fidelity National Info"),("GPN","Global Payments"),("CPAY","Corpay"),
+ ("JKHY","Jack Henry"),("COIN","Coinbase"),("BRO","Brown & Brown"),("ACGL","Arch Capital"),
+ ("EG","Everest Group"),("GL","Globe Life"),("L","Loews"),("PFG","Principal Financial"),
+ ("IVZ","Invesco"),("BEN","Franklin Resources"),("NTRS","Northern Trust"),
+ ("SYF","Synchrony Financial"),("WRB","W.R. Berkley"),("AIZ","Assurant"),
+ ("ERIE","Erie Indemnity"),("CBOE","Cboe Global Markets"),("MKTX","MarketAxess"),
+ ("FDS","FactSet"),
 ],
 "XLY": [
  ("AMZN","Amazon"),("TSLA","Tesla"),("HD","Home Depot"),("MCD","McDonald's"),
@@ -84,6 +100,9 @@ CONSTITUENTS = {
  ("WYNN","Wynn Resorts"),("MGM","MGM Resorts"),("LKQ","LKQ Corp"),
  ("NCLH","Norwegian Cruise Line"),("CZR","Caesars Entertainment"),("RL","Ralph Lauren"),
  ("TPR","Tapestry"),
+ ("DASH","DoorDash"),("DPZ","Domino's Pizza"),("LULU","Lululemon"),("GPC","Genuine Parts"),
+ ("WSM","Williams-Sonoma"),("HAS","Hasbro"),("MHK","Mohawk Industries"),
+ ("BLDR","Builders FirstSource"),
 ],
 "XLC": [
  ("META","Meta Platforms"),("GOOGL","Alphabet A"),("GOOG","Alphabet C"),("NFLX","Netflix"),
@@ -92,6 +111,7 @@ CONSTITUENTS = {
  ("TTWO","Take-Two Interactive"),("OMC","Omnicom"),("LYV","Live Nation"),
  ("WBD","Warner Bros. Discovery"),("IPG","Interpublic"),("NWSA","News Corp A"),
  ("FOXA","Fox Corp A"),("MTCH","Match Group"),
+ ("NWS","News Corp B"),("FOX","Fox Corp B"),
 ],
 "XLI": [
  ("GE","GE Aerospace"),("CAT","Caterpillar"),("RTX","RTX Corp"),("UNP","Union Pacific"),
@@ -108,6 +128,13 @@ CONSTITUENTS = {
  ("ODFL","Old Dominion Freight"),("HWM","Howmet Aerospace"),("AXON","Axon Enterprise"),
  ("XYL","Xylem"),("UAL","United Airlines"),("LUV","Southwest Airlines"),("DOV","Dover"),
  ("ROK","Rockwell Automation"),("WAB","Wabtec"),("BR","Broadridge"),
+ ("CPRT","Copart"),("TDG","TransDigm"),("VLTO","Veralto"),("EME","EMCOR Group"),
+ ("J","Jacobs Solutions"),("MAS","Masco"),("SNA","Snap-on"),
+ ("SWK","Stanley Black & Decker"),("ALLE","Allegion"),("NDSN","Nordson"),
+ ("IEX","IDEX Corp"),("GNRC","Generac"),("PNR","Pentair"),("CHRW","C.H. Robinson"),
+ ("EXPD","Expeditors Intl"),("JBHT","J.B. Hunt"),("TXT","Textron"),
+ ("HII","Huntington Ingalls"),("LDOS","Leidos"),("BAH","Booz Allen Hamilton"),
+ ("ROL","Rollins"),("FTV","Fortive"),("AOS","A.O. Smith"),("GWW","W.W. Grainger"),
 ],
 "XLP": [
  ("COST","Costco"),("WMT","Walmart"),("PG","Procter & Gamble"),("KO","Coca-Cola"),
@@ -120,6 +147,7 @@ CONSTITUENTS = {
  ("CAG","Conagra Brands"),("TSN","Tyson Foods"),("HRL","Hormel Foods"),("SJM","J.M. Smucker"),
  ("CPB","Campbell's"),("LW","Lamb Weston"),("BG","Bunge Global"),("TAP","Molson Coors"),
  ("CLX","Clorox"),("BF-B","Brown-Forman B"),
+ ("KHC","Kraft Heinz"),
 ],
 "XLE": [
  ("XOM","Exxon Mobil"),("CVX","Chevron"),("COP","ConocoPhillips"),("EOG","EOG Resources"),
@@ -150,6 +178,7 @@ CONSTITUENTS = {
  ("ESS","Essex Property"),("ARE","Alexandria Real Estate"),("DOC","Healthpeak"),
  ("KIM","Kimco Realty"),("UDR","UDR Inc"),("HST","Host Hotels"),("REG","Regency Centers"),
  ("CPT","Camden Property"),("BXP","BXP Inc"),("FRT","Federal Realty"),
+ ("VTR","Ventas"),("CSGP","CoStar Group"),
 ],
 "XLB": [
  ("LIN","Linde"),("SHW","Sherwin-Williams"),("APD","Air Products"),("ECL","Ecolab"),
@@ -159,6 +188,7 @@ CONSTITUENTS = {
  ("AMCR","Amcor"),("STLD","Steel Dynamics"),("CF","CF Industries"),("BALL","Ball Corp"),
  ("IP","International Paper"),("ALB","Albemarle"),("EMN","Eastman Chemical"),
  ("CE","Celanese"),("MOS","Mosaic"),
+ ("SW","Smurfit Westrock"),("AVY","Avery Dennison"),
 ],
 }
 
