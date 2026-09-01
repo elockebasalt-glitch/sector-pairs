@@ -31,7 +31,9 @@ from plotly.subplots import make_subplots
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
-from constituents import (CONSTITUENTS, SECTOR_NAMES, TICKER_TO_ETF, TICKER_TO_NAME)
+from constituents import (CONSTITUENTS, SECTOR_NAMES, SUBSECTOR_ETFS,
+                          SUBSECTOR_LABEL, SUBSECTOR_PARENT,
+                          TICKER_TO_ETF, TICKER_TO_NAME)
 
 SECTOR_ETFS = list(SECTOR_NAMES.keys())
 BROAD = ["SPY", "QQQ", "VBR", "IWM"]
@@ -51,9 +53,11 @@ FREQ = {
 
 
 def label_for(t: str) -> str:
-    """XLY -> 'XLY · Consumer Discretionary';  NVDA -> 'NVDA · NVIDIA'."""
+    """XLY -> 'XLY · Consumer Discretionary';  SOXX -> 'SOXX · Semiconductors'."""
     if t in SECTOR_NAMES:
         return f"{t} · {SECTOR_NAMES[t]}"
+    if t in SUBSECTOR_LABEL:
+        return f"{t} · {SUBSECTOR_LABEL[t]}"
     if t in TICKER_TO_NAME:
         return f"{t} · {TICKER_TO_NAME[t]}"
     return t
@@ -157,7 +161,7 @@ def macd(close: pd.Series, f: int = 12, s: int = 26, g: int = 9):
 
 def rel_z(px: pd.Series, bench: pd.Series, window: int) -> pd.Series:
     """Rolling z of the log price ratio. Index is the intersection of both."""
-    j = pd.concat([px, bench], axis=1).dropna()
+    j = pd.concat([px, bench], axis=1, sort=False).sort_index().dropna()
     if j.empty:
         return pd.Series(dtype=float)
     r = np.log(j.iloc[:, 0] / j.iloc[:, 1])
@@ -557,6 +561,20 @@ def scan_extremes(years: int, freq: str, z_win: int, rsi_n: int,
                 continue
             con.append(_row(t, nm, SECTOR_NAMES[etf], px[t].dropna(), etf, zv))
 
+    subs = []
+    sub_px = load_closes(tuple(SUBSECTOR_ETFS) + tuple(SECTOR_ETFS), years, freq)
+    if not sub_px.empty:
+        for t, (parent, lab) in SUBSECTOR_ETFS.items():
+            if t not in sub_px.columns or parent not in sub_px.columns:
+                continue
+            zs = rel_z(sub_px[t].dropna(), sub_px[parent].dropna(), z_win).dropna()
+            if zs.empty:
+                continue
+            zv = float(zs.iloc[-1])
+            if abs(zv) < thresh:
+                continue
+            subs.append(_row(t, lab, "Sub-sector ETF", sub_px[t].dropna(), parent, zv))
+
     sec = []
     base = load_closes(tuple(SECTOR_ETFS) + tuple(BROAD), years, freq)
     if not base.empty and index_sym in base.columns:
@@ -574,7 +592,8 @@ def scan_extremes(years: int, freq: str, z_win: int, rsi_n: int,
                             base[etf].dropna(), index_sym, zv))
 
     key = lambda d: d.reindex(d["z"].abs().sort_values(ascending=False).index) if len(d) else d
-    return key(pd.DataFrame(con)), key(pd.DataFrame(sec)), missing
+    return (key(pd.DataFrame(con)), key(pd.DataFrame(sec)),
+            key(pd.DataFrame(subs)), missing)
 
 
 def shade(v, lo: float, hi: float, neg=(76, 201, 240), pos=(240, 162, 2)) -> str:
@@ -619,7 +638,7 @@ def direction_for(z_now: float) -> tuple[int, str]:
 
 def benchmark_picker(key: str, default: str = "SPY") -> str:
     """Sector ETFs and broad indexes by name, plus a free-text 'Other' box."""
-    opts = SECTOR_ETFS + BROAD + ["Other…"]
+    opts = SECTOR_ETFS + BROAD + sorted(SUBSECTOR_ETFS) + ["Other…"]
     idx = opts.index(default) if default in opts else 0
     pick = st.selectbox("Benchmark", opts, index=idx, key=f"{key}_bench",
                         format_func=label_for)
@@ -916,7 +935,8 @@ if fetch_all:
                    "lower in the sidebar if reruns feel slow.")
 
 tabs = st.tabs(["◆ Summary"] + [f"{e} {SECTOR_NAMES[e]}" for e in SECTOR_ETFS]
-               + ["◆ Backtest", "◆ Sectors vs market"])
+               + ["◆ Sub-sectors", "◆ Backtest", "◆ Sectors vs market",
+                  "◆ Custom pair"])
 sector_tabs = tabs[1:1 + len(SECTOR_ETFS)]
 
 with tabs[0]:
@@ -927,13 +947,21 @@ with tabs[0]:
     if st.session_state.get("sum_done") or st.button("Scan all 501 names", key="sum_btn",
                                                      type="primary"):
         st.session_state["sum_done"] = True
-        con, sec, miss = scan_extremes(years, freq, z_win, rsi_n, z_flag, summary_idx)
+        con, sec, subs, miss = scan_extremes(years, freq, z_win, rsi_n, z_flag, summary_idx)
 
         st.markdown(f"##### Sector ETFs vs {summary_idx}")
         if sec.empty:
             st.info(f"No sector is past ±{z_flag:.1f} against {summary_idx} right now.")
         else:
             st.dataframe(shade_col(sec.reset_index(drop=True), "z", -3, 3)
+                         .format(precision=2, na_rep="—"),
+                         use_container_width=True, hide_index=True)
+
+        st.markdown("##### Sub-sector ETFs vs their parent SPDR")
+        if subs.empty:
+            st.info(f"No sub-sector ETF is past ±{z_flag:.1f} against its parent sector.")
+        else:
+            st.dataframe(shade_col(subs.reset_index(drop=True), "z", -3, 3)
                          .format(precision=2, na_rep="—"),
                          use_container_width=True, hide_index=True)
 
@@ -983,7 +1011,72 @@ for etf, tab in zip(SECTOR_ETFS, sector_tabs):
         scan_panel(f"sec_{etf}", names, etf, prices, z_win, rsi_n, bar,
                    rsi_lo, rsi_hi, view_years, max_charts)
 
+# --- sub-sector and thematic ETFs ---------------------------------------------
 with tabs[len(SECTOR_ETFS) + 1]:
+    st.markdown(f"#### {len(SUBSECTOR_ETFS)} sub-sector and thematic ETFs")
+    bm_mode = st.radio("Measured against",
+                       ["Parent sector SPDR", "SPY", "QQQ", "RSP", "IWM"],
+                       horizontal=True, key="ss_mode",
+                       help="Parent measures SOXX against XLK, XBI against XLV and so "
+                            "on — that isolates the theme from its sector. The index "
+                            "options measure it against the market instead.")
+    if st.session_state.get("ss_loaded") or st.button("Load sub-sector ETFs",
+                                                      key="ss_btn", type="primary"):
+        st.session_state["ss_loaded"] = True
+        spx = load_closes(tuple(SUBSECTOR_ETFS) + tuple(SECTOR_ETFS) + tuple(BROAD),
+                          years, freq)
+        if spx.empty:
+            st.error("Price download failed.")
+        else:
+            rows = []
+            for t, (parent, lab) in SUBSECTOR_ETFS.items():
+                bsym = parent if bm_mode == "Parent sector SPDR" else bm_mode
+                if t not in spx.columns or bsym not in spx.columns:
+                    continue
+                pt, bn = spx[t].dropna(), spx[bsym].dropna()
+                zz = rel_z(pt, bn, z_win).dropna()
+                rr = rsi(pt, rsi_n).dropna()
+                rows.append({"ticker": t, "theme": lab, "vs": bsym,
+                             "last": round(float(pt.iloc[-1]), 2),
+                             "RSI": round(float(rr.iloc[-1]), 1) if len(rr) else np.nan,
+                             "z": round(float(zz.iloc[-1]), 2) if len(zz) else np.nan})
+            df = pd.DataFrame(rows)
+            miss = [t for t in SUBSECTOR_ETFS if t not in spx.columns]
+            if df.empty:
+                st.error("No sub-sector ETF resolved.")
+            else:
+                df = df.reindex(df["z"].abs().sort_values(ascending=False).index)
+                n_show = len(df) if max_charts is None else min(max_charts, len(df))
+                st.caption(f"{len(df)} of {len(SUBSECTOR_ETFS)} resolved · sorted by |z| · "
+                           f"{n_show} charts drawn"
+                           + (f" · no data: {', '.join(miss)}" if miss else ""))
+                st.dataframe(shade_col(df.reset_index(drop=True), "z", -3, 3)
+                             .format(precision=2, na_rep="—"),
+                             use_container_width=True, hide_index=True, height=420)
+                st.divider()
+                for i, t in enumerate(df["ticker"].head(n_show)):
+                    parent, lab = SUBSECTOR_ETFS[t]
+                    bsym = parent if bm_mode == "Parent sector SPDR" else bm_mode
+                    pt, bn = spx[t].dropna(), spx[bsym].dropna()
+                    zz = rel_z(pt, bn, z_win).dropna()
+                    zn = float(zz.iloc[-1]) if len(zz) else 0.0
+                    col = RICH if zn > 2 else CHEAP if zn < -2 else TEXT
+                    st.markdown(
+                        f"<div style='display:flex;align-items:baseline;gap:.8rem;"
+                        f"margin:.1rem 0 -.4rem'>"
+                        f"<b style='font-size:1.05rem;color:{LINE}'>{t}</b>"
+                        f"<span style='font-size:.72rem;letter-spacing:.1em;"
+                        f"text-transform:uppercase;color:{MUTED}'>{lab} · vs {bsym}</span>"
+                        f"<span style='margin-left:auto;font-size:.85rem;color:{col}'>"
+                        f"z {zn:+.2f}</span></div>", unsafe_allow_html=True)
+                    st.plotly_chart(compact_figure(pt, bn, z_win, rsi_n, bar, bsym,
+                                                   rsi_lo, rsi_hi, view_years),
+                                    use_container_width=True, key=f"ss_{i}_{t}")
+    else:
+        st.caption("Not loaded. Click to fetch.")
+
+
+with tabs[len(SECTOR_ETFS) + 2]:
     st.markdown("#### Pair backtest — entry at the current z-state")
     c1, c2 = st.columns([2, 3])
     with c1:
@@ -998,7 +1091,7 @@ with tabs[len(SECTOR_ETFS) + 1]:
                           z_win, stop, max_hold, key="bt", ann=ann, bar=bar,
                           rsi_n=rsi_n, rsi_lo=rsi_lo, rsi_hi=rsi_hi)
 
-with tabs[len(SECTOR_ETFS) + 2]:
+with tabs[len(SECTOR_ETFS) + 3]:
     st.markdown("#### All eleven sectors vs a broad index")
     c1, c2 = st.columns([2, 3])
     idx = c1.selectbox("Index", BROAD + ["Other…"], key="bm_idx")
@@ -1052,3 +1145,63 @@ with tabs[len(SECTOR_ETFS) + 2]:
                           ann=ann, bar=bar, rsi_n=rsi_n, rsi_lo=rsi_lo, rsi_hi=rsi_hi)
     else:
         st.caption("Not loaded. Click to fetch all eleven sector ETFs and the index.")
+
+
+# ── any two symbols ─────────────────────────────────────────────────────────
+with tabs[-1]:
+    st.markdown("#### Custom pair — any two symbols")
+    st.caption("Not restricted to the S&P universe. Any ticker Yahoo or Stooq carries "
+               "will work: a stock, an ETF, an index proxy.")
+    c1, c2, c3 = st.columns([2, 2, 1])
+    a_sym = c1.text_input("Symbol", value="NVDA", key="cp_a").strip().upper()
+    b_sym = c2.text_input("Benchmark", value="XLK", key="cp_b").strip().upper()
+    c3.write("")
+    do_bt = c3.checkbox("Backtest", value=False, key="cp_bt",
+                        help="Adds the entry study and z-grid. Slower.")
+
+    if not (a_sym and b_sym):
+        st.info("Enter both symbols.")
+    elif a_sym == b_sym:
+        st.warning("Both symbols are the same — the ratio would be flat and z undefined.")
+    elif st.button("Load pair", key="cp_go", type="primary"):
+        px2 = load_closes((a_sym, b_sym), years, freq)
+        gone = [t for t in (a_sym, b_sym) if t not in px2.columns
+                or px2[t].dropna().empty]
+        if gone:
+            st.error("No price history for: " + ", ".join(gone)
+                     + ". Check the ticker, and note that class shares use a dash "
+                       "(BRK-B, BF-B) rather than a dot.")
+        else:
+            pa, pb = px2[a_sym].dropna(), px2[b_sym].dropna()
+            overlap = pa.index.intersection(pb.index)
+            if len(overlap) < z_win + 5:
+                st.error(f"Only {len(overlap)} overlapping bars — the {z_win}-{bar} "
+                         "z-window needs more. Shorten the window or pick a "
+                         "longer-lived symbol.")
+            else:
+                zc = rel_z(pa, pb, z_win).dropna()
+                zn = float(zc.iloc[-1])
+                r = rsi(pa, rsi_n).dropna()
+                _, _, hh = macd(pa)
+                hh = hh.dropna()
+                m = st.columns(5)
+                m[0].metric(f"{a_sym} last", f"{pa.iloc[-1]:,.2f}")
+                m[1].metric(f"{b_sym} last", f"{pb.iloc[-1]:,.2f}")
+                m[2].metric(f"RSI({rsi_n})", f"{r.iloc[-1]:.1f}" if len(r) else "—")
+                m[3].metric("MACD hist", f"{hh.iloc[-1]:+.3f}" if len(hh) else "—")
+                m[4].metric(f"Z vs {b_sym}", f"{zn:+.2f}")
+                d, msg = direction_for(zn)
+                st.markdown(msg.replace("stock", a_sym).replace("benchmark", b_sym))
+                st.caption(f"{len(overlap)} overlapping bars from "
+                           f"{overlap.min():%Y-%m-%d} to {overlap.max():%Y-%m-%d}.")
+                if do_bt:
+                    show_backtest(a_sym, b_sym, px2, z_win, stop, max_hold, "cp",
+                                  ann=ann, bar=bar, rsi_n=rsi_n,
+                                  rsi_lo=rsi_lo, rsi_hi=rsi_hi)
+                else:
+                    st.plotly_chart(
+                        indicator_figure(pa, pb, a_sym, b_sym, z_win, rsi_n, bar,
+                                         rsi_lo, rsi_hi, view_years),
+                        use_container_width=True, key="cp_fig")
+    else:
+        st.caption("Set the two symbols, then press Load pair.")
